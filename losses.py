@@ -21,6 +21,39 @@ def lag_one_coherence(iq, t_tx, t_rx, fs, fd):
     ncc = xy / jnp.sqrt(xx * yy)
     return ncc
 
+@partial(jit, static_argnums=(3, 4, 5))
+def lag_m_coherence(iq, t_tx, t_rx, fs, fd, m=1):
+    """
+    Lag-m coherence of the receive aperture (DOI: 10.1109/TUFFC.2018.2855653).
+    The LOC measures the quality of a signal relative to its noise, and can be
+    used to select acoustic output.
+    """
+    iq = jnp.transpose(iq, (1, 0, 2))  # Place rx aperture in 0-th index
+    rxdata = das(iq, t_rx, t_tx, fs, fd, jnp.eye(iq.shape[0]))  # Get rx channel data
+    # Compute the correlation coefficient
+    xy = jnp.real(jnp.nansum(rxdata[:-m] * jnp.conj(rxdata[m:]), axis=0))
+    xx = jnp.nansum(jnp.abs(rxdata[:-m]) ** 2, axis=0)
+    yy = jnp.nansum(jnp.abs(rxdata[m:]) ** 2, axis=0)
+    ncc = xy / jnp.sqrt(xx * yy)
+    return ncc
+
+@partial(jit, static_argnums=(3, 4, 5))
+def slsc_m(iq, t_tx, t_rx, fs, fd, M=1):
+    """
+    Lag-m coherence of the receive aperture (DOI: 10.1109/TUFFC.2018.2855653).
+    The LOC measures the quality of a signal relative to its noise, and can be
+    used to select acoustic output.
+    """
+    iq = jnp.transpose(iq, (1, 0, 2))  # Place rx aperture in 0-th index
+    rxdata = das(iq, t_rx, t_tx, fs, fd, jnp.eye(iq.shape[0]))  # Get rx channel data
+    # Compute the correlation coefficient
+    ncc = 0
+    for m in range(1,M):
+        xy = jnp.real(jnp.nansum(rxdata[:-m] * jnp.conj(rxdata[m:]), axis=0))
+        xx = jnp.nansum(jnp.abs(rxdata[:-m]) ** 2, axis=0)
+        yy = jnp.nansum(jnp.abs(rxdata[m:]) ** 2, axis=0)
+        ncc += xy / jnp.sqrt(xx * yy)
+    return ncc/M
 
 @partial(jit, static_argnums=(3, 4))
 def coherence_factor(iq, t_tx, t_rx, fs, fd):

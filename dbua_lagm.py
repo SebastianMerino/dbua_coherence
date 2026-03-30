@@ -10,13 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 from jaxopt import OptaxSolver
 import optax
-from losses import (
-    lag_one_coherence,
-    coherence_factor,
-    phase_error,
-    total_variation,
-    speckle_brightness,
-)
+from losses import *
 import time
 
 
@@ -53,8 +47,11 @@ PHASE_ERROR_Z_MAX = 44e-3
 # -"sb" for speckle brightness
 # -"cf" for coherence factor
 # -"lc" for lag one coherence
+# -"lmc" for lag m coherence
+# -"slsc" for slsc coherence
 
-LOSS = "lc"
+LOSS = "pe"
+MAX_LAG = 7
 
 # Data options:
 # (Constant Phantoms)
@@ -73,7 +70,7 @@ LOSS = "lc"
 # - checker2
 # - checker8
 
-SAMPLE = "checker2"
+SAMPLE = "1570"
 
 CTRUE = {
     "1420": 1420,
@@ -117,21 +114,21 @@ def load_dataset(sample):
     return iqdata, t0, fs, fd, elpos, dsf, t
 
 
-def plot_errors_vs_sound_speeds(c0, dsb, dlc, dcf, dpe, sample):
+def plot_errors_vs_sound_speeds(c0, dlc, dl7c, dslsc, dpe, sample):
     plt.clf()
-    plt.plot(c0, dsb, label="Speckle Brightness")
     plt.plot(c0, dlc, label="Lag One Coherence")
-    plt.plot(c0, dcf, label="Coherence Factor")
+    plt.plot(c0, dl7c, label="Lag 7 Coherence")
+    plt.plot(c0, dslsc, label="SLSC M=7")
     # divided by 10 for visualization
     plt.plot(c0, dpe / 10, label="Phase Error")
     plt.grid()
+    plt.axvline(x=CTRUE[SAMPLE], color='black', linestyle=':')
     plt.xlabel("Global sound speed (m/s)")
     plt.ylabel("Loss function")
     plt.title(sample)
     plt.legend()
-    plt.savefig(f"images/losses_{sample}.png")
+    plt.savefig(f"images/losses_coherence_{sample}_v2.png")
     plt.clf()
-
 
 def main(sample, loss_name):
 
@@ -190,10 +187,16 @@ def main(sample, loss_name):
         t = tof_patch(c)
         return (func)(iqdata, t - t0, t, fs, fd)
 
+    def loss_wrapper_new(func, c, m=1):
+        t = tof_patch(c)
+        return (func)(iqdata, t - t0, t, fs, fd, m)
+
     # Define loss functions
-    sb_loss = jit(lambda c: 1 - loss_wrapper(speckle_brightness, c))
     lc_loss = jit(lambda c: 1 - jnp.mean(loss_wrapper(lag_one_coherence, c)))
+    lmc_loss = jit(lambda c: 1 - jnp.mean(loss_wrapper_new(lag_m_coherence, c, m=MAX_LAG)))
+    slscm_loss = jit(lambda c: 1 - jnp.mean(loss_wrapper_new(slsc_m, c, m=MAX_LAG)))
     cf_loss = jit(lambda c: 1 - jnp.mean(loss_wrapper(coherence_factor, c)))
+    sb_loss = jit(lambda c: 1 - loss_wrapper(speckle_brightness, c))
 
     @jit
     def pe_loss(c):
@@ -214,6 +217,11 @@ def main(sample, loss_name):
             return cf_loss(c) + tv(c) * 1e2
         elif loss_name == "pe":  # Phase error
             return pe_loss(c) + tv(c) * 1e2
+        elif loss_name == "lmc":  # Lag 7 coherence
+            return lmc_loss(c) + tv(c) * 1e2
+        elif loss_name == "slsc":  # slsc Lag 7
+            return slscm_loss(c) + tv(c) * 1e2
+
         else:
             NotImplementedError
 
@@ -222,12 +230,10 @@ def main(sample, loss_name):
 
     # find optimal global sound speed for initalization
     c0 = np.linspace(1340, 1740, 201)
-    # dpe = np.array(
-    #     [pe_loss(cc * jnp.ones((SOUND_SPEED_NXC, SOUND_SPEED_NZC))) for cc in c0])
-    dlc = np.array(
-        [lc_loss(cc * jnp.ones((SOUND_SPEED_NXC, SOUND_SPEED_NZC))) for cc in c0])
+    dlmc = np.array(
+        [lmc_loss(cc * jnp.ones((SOUND_SPEED_NXC, SOUND_SPEED_NZC))) for cc in c0])
     # Use the sound speed with the optimal phase error to initialize sound speed map
-    c = c0[np.argmin(dlc)] * jnp.ones((SOUND_SPEED_NXC, SOUND_SPEED_NZC))
+    c = c0[np.argmin(dlmc)] * jnp.ones((SOUND_SPEED_NXC, SOUND_SPEED_NZC))
 
     # Create the optimizer
     opt = OptaxSolver(opt=optax.amsgrad(LEARNING_RATE),
@@ -237,7 +243,7 @@ def main(sample, loss_name):
     # Create the figure writer
     fig, _ = plt.subplots(1, 2, figsize=[9, 4])
     vobj = FFMpegWriter(fps=30)
-    vobj.setup(fig, "videos/%s_opt%s.mp4" % (sample, loss_name), dpi=144)
+    vobj.setup(fig, "videos/%s_opt_%s.mp4" % (sample, loss_name), dpi=144)
 
     # Create the image axes for plotting
     ximm = xi[:, 0] * 1e3
